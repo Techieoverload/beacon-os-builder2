@@ -1,0 +1,93 @@
+name: Build BeaconOS Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f || true
+          df -h
+
+      - name: Clone Armbian build engine
+        run: |
+          # Pin to a tag or commit once you have a working build, for reproducibility
+          git clone --depth 1 https://github.com/armbian/build armbian-build
+
+      - name: Install Armbian host requirements
+        run: |
+          cd armbian-build
+          ./compile.sh requirements
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Cross-compile go-irl for arm64
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/e04/go-irl /tmp/go-irl
+          cd /tmp/go-irl
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/go-irl" .
+          file "$GITHUB_WORKSPACE/go-irl"
+
+          # AGPL-3.0 compliance: ship licence text + source pointer with the image
+          LIC="$GITHUB_WORKSPACE/licenses/go-irl"
+          mkdir -p "$LIC"
+          cp LICENSE* "$LIC/"
+          COMMIT=$(git rev-parse HEAD)
+          cat > "$LIC/SOURCE-OFFER.txt" << OFFER
+          go-irl is licensed under AGPL-3.0 (see LICENSE).
+          Corresponding source for the binary in this image:
+            https://github.com/e04/go-irl
+            commit $COMMIT
+          If you received this image from us and cannot access that URL,
+          contact us for a copy of the source.
+          OFFER
+
+      - name: Prepare userpatches
+        run: |
+          set -euo pipefail
+          mkdir -p armbian-build/userpatches/overlay/usr/local/bin
+          cp -r userpatches/. armbian-build/userpatches/
+          install -m 0755 go-irl armbian-build/userpatches/overlay/usr/local/bin/go-irl
+          mkdir -p armbian-build/userpatches/overlay/usr/share/doc/beacon
+          cp -r licenses armbian-build/userpatches/overlay/usr/share/doc/beacon/
+          chmod +x armbian-build/userpatches/customize-image.sh
+          find armbian-build/userpatches -type f
+
+      - name: Compile Orange Pi 5 Plus image
+        run: |
+          cd armbian-build
+          ./compile.sh build \
+            BOARD=orangepi5-plus \
+            BRANCH=vendor \
+            RELEASE=bookworm \
+            BUILD_MINIMAL=yes \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no \
+            KERNEL_BTF=no \
+            CONSOLE_AUTOLOGIN=no \
+            COMPRESS_OUTPUTIMAGE=sha,img,xz
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeaconOS-OrangePi5Plus-Image
+          path: armbian-build/output/images/*
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: armbian-debug-logs
+          path: armbian-build/output/logs/
+          if-no-files-found: ignore

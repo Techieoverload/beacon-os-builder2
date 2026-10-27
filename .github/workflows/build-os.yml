@@ -55,22 +55,22 @@ jobs:
           unzip -o /tmp/go-irl.zip -d armbian-build/userpatches/overlay/usr/local/bin/
           chmod +x armbian-build/userpatches/overlay/usr/local/bin/*
 
-          # 3. Create Go-IRL Systemd Unit
+          # 3. Create Go-IRL Systemd Unit (Headless Mode Fix included)
           cat << 'EOF' > armbian-build/userpatches/overlay/etc/systemd/system/beacon-srtla.service
-[Unit]
-Description=Go-IRL SRTLA Service
-After=network.target
+          [Unit]
+          Description=Go-IRL SRTLA Service
+          After=network.target
 
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/go-irl -srtla-port 5000 -udp-port 5002 -srt-port 5001
-Restart=always
-RestartSec=3
+          [Service]
+          Type=simple
+          User=root
+          ExecStart=/usr/local/bin/go-irl -mode=standalone -cli -srtla-port 5000 -udp-port 5002 -srt-port 5001
+          Restart=always
+          RestartSec=3
 
-[Install]
-WantedBy=multi-user.target
-EOF
+          [Install]
+          WantedBy=multi-user.target
+          EOF
 
       - name: Compile Orange Pi 5 Plus OS
         run: |

@@ -12,14 +12,12 @@ jobs:
 
       - name: Free disk space & allocate swap
         run: |
-          # 1. Clean runner bloat to free ~35-40GB of root partition space
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           sudo docker image prune -a -f || true
 
-          # 2. Add swap space to prevent compiler out-of-memory errors
           if ! swapon --show | grep -q "/swapfile"; then
             sudo fallocate -l 4G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
             sudo chmod 600 /swapfile
@@ -30,7 +28,6 @@ jobs:
           df -h
           free -h
 
-      # Register QEMU emulation on the host kernel for ARM64 builds
       - name: Set up QEMU emulation
         uses: docker/setup-qemu-action@v3
 
@@ -38,65 +35,52 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/armbian/build armbian-build
 
-      - name: Download Go-IRL & Prepare RootFS Overlay
+      - name: Prepare RootFS Overlay & Userpatches
         run: |
           set -euo pipefail
 
-          # 1. Create target directories for Armbian overlay
+          # 1. Copy userpatches from git repository into Armbian engine
           mkdir -p armbian-build/userpatches/overlay/usr/local/bin
           mkdir -p armbian-build/userpatches/overlay/etc/systemd/system
+          cp -r userpatches/* armbian-build/userpatches/
 
-          # 2. Query latest release tag via GitHub API
+          # 2. Fetch latest pre-built Go-IRL ARM64 binary
           TAG=$(curl -sfL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/e04/go-irl/releases/latest | jq -r '.tag_name')
 
-          echo "Downloading Go-IRL version: $TAG"
-
-          # 3. Download ARM64 archive and extract into overlay
+          echo "Downloading Go-IRL release: $TAG"
           DOWNLOAD_URL="https://github.com/e04/go-irl/releases/download/${TAG}/go-irl-linux-arm64.zip"
           curl -fSL "$DOWNLOAD_URL" -o /tmp/go-irl.zip
           unzip -o /tmp/go-irl.zip -d armbian-build/userpatches/overlay/usr/local/bin/
           chmod +x armbian-build/userpatches/overlay/usr/local/bin/*
 
-          # 4. Generate systemd service unit file
+          # 3. Create Go-IRL Systemd Unit
           cat << 'EOF' > armbian-build/userpatches/overlay/etc/systemd/system/beacon-srtla.service
-          [Unit]
-          Description=Go-IRL SRTLA Service
-          After=network.target
+[Unit]
+Description=Go-IRL SRTLA Service
+After=network.target
 
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/go-irl -srtla-port 5000 -udp-port 5002 -srt-port 5001
-          Restart=always
-          RestartSec=3
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/go-irl -srtla-port 5000 -udp-port 5002 -srt-port 5001
+Restart=always
+RestartSec=3
 
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+[Install]
+WantedBy=multi-user.target
+EOF
 
-          # 5. Add customization hook to install files inside target chroot
-          cat << 'EOF' > armbian-build/userpatches/customize-image.sh
-          #!/bin/bash
-          Main() {
-              cp -rf /tmp/overlay/* /
-              chmod +x /usr/local/bin/go-irl*
-              systemctl enable beacon-srtla.service
-          }
-          Main "$@"
-          EOF
-          chmod +x armbian-build/userpatches/customize-image.sh
-
-      - name: Compile Custom Orange Pi 5 Plus OS
+      - name: Compile Orange Pi 5 Plus OS
         run: |
-          # Ensure loop devices required by image creation exist on the host
           sudo modprobe loop || true
           for i in {0..15}; do
             sudo mknod -m 0660 /dev/loop$i b 7 $i 2>/dev/null || true
           done
 
           cd armbian-build
-          ./compile.sh build \
+          sudo ./compile.sh build \
             BOARD=orangepi5-plus \
             BRANCH=vendor \
             RELEASE=bookworm \
@@ -105,7 +89,7 @@ jobs:
             KERNEL_CONFIGURE=no \
             KERNEL_BTF=no \
             PREFER_DOCKER=no \
-            COMPRESS_OUTPUT_IMAGES=sha,xz \
+            COMPRESS_OUTPUTIMAGE=sha,xz \
             EXPERT=yes
 
       - name: Upload Bootable OS Image
